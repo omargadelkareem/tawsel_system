@@ -1,0 +1,99 @@
+/* الخلفية */
+.login-container {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  font-family: Arial, sans-serif;
+}
+
+/* الكرت المركزي */
+.login-card {
+  background: #fff;
+  padding: 40px;
+  border-radius: 20px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+  position: relative;
+}
+
+/* الشعار الدائري */
+.logo {
+  background-color: #4facfe;
+  color: #fff;
+  width: 70px;
+  height: 70px;
+  line-height: 70px;
+  margin: 0 auto 20px auto;
+  border-radius: 50%;
+  font-size: 28px;
+  font-weight: bold;
+  box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+}
+
+/* عنوان */
+.login-card h2 {
+  font-size: 26px;
+  margin-bottom: 20px;
+  color: #333;
+}
+
+/* الأخطاء */
+.error {
+  color: red;
+  margin-bottom: 15px;
+}
+
+/* الحقول */
+.input-group {
+  margin-bottom: 20px;
+  position: relative;
+}
+
+.input-group input {
+  width: 100%;
+  padding: 12px 15px;
+  border-radius: 12px;
+  border: 1px solid #ccc;
+  font-size: 16px;
+  transition: all 0.3s ease;
+}
+
+.input-group input:focus {
+  border-color: #4facfe;
+  box-shadow: 0 0 5px rgba(79,172,254,0.5);
+  outline: none;
+}
+
+/* زر تسجيل الدخول */
+button {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 12px;
+  background-color: #4facfe;
+  color: white;
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+button:hover {
+  background-color: #00f2fe;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* نص الفوتر */
+.footer-text {
+  margin-top: 20px;
+  color: #888;
+  font-size: 14px;
+}
