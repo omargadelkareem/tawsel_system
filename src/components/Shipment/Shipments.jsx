@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../Auth/AuthContext";
 import {
   watchShipments,
-  watchCouriersByCompany,    // الصحيحة
+  watchCouriersByCompany,
   setStatusWithInventory,
 } from "../../firebase";
 import "./shipment.css";
@@ -11,19 +11,14 @@ import "./shipment.css";
 const TABS = [
   { id: "new", label: "شحنات جديدة", status: "CREATED" },
   { id: "hub", label: "في المخزن", status: "AT_HUB" },
-  { id: "ready", label: "جاهزة للتسليم", status: "ASSIGNED" },
   { id: "out", label: "قيد التسليم", status: "OUT_FOR_DELIVERY" },
   { id: "done", label: "تم التسليم", status: "DELIVERED" },
- 
   { id: "returned", label: "مرتجع", status: ["RETURNED_TO_HUB", "RETURNED"] },
   { id: "postponed", label: "مؤجل", status: "POSTPONED" },
 ];
 
 export default function Shipments() {
-  {
   const { user, profile } = useAuth();
-
-  // مهم جدًا: ما نستخدمش "default" هنا
   const companyId = profile?.companyId;
 
   const [activeTab, setActiveTab] = useState("new");
@@ -33,105 +28,162 @@ export default function Shipments() {
   const [selected, setSelected] = useState(new Set());
   const [selectedCourier, setSelectedCourier] = useState("");
   const [assigning, setAssigning] = useState(false);
-  const [showModal, setShowModal] = useState(false);
+  const [depositing, setDepositing] = useState(false);
 
-  // جلب البيانات
+  // مودالات التأكيد
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [showDepositModal, setShowDepositModal] = useState(false);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnShipmentId, setReturnShipmentId] = useState(null);
+
+  const [deliveryFilter, setDeliveryFilter] = useState("today");
+  const [previousDate, setPreviousDate] = useState("");
+
   useEffect(() => {
-    if (!companyId) {
-      console.warn("لا يوجد companyId → المندوبين والشحنات مش هتظهر");
-      setCouriers([]);
-      setShipments([]);
-      return;
-    }
-
+    if (!companyId) return;
     const unsubShipments = watchShipments(setShipments);
-    const unsubCouriers = watchCouriersByCompany(companyId, setCouriers); // الصحيح
-
+    const unsubCouriers = watchCouriersByCompany(companyId, setCouriers);
     return () => {
       unsubShipments?.();
       unsubCouriers?.();
     };
   }, [companyId]);
 
-  // الفلترة
   const filtered = useMemo(() => {
     let list = shipments;
 
-    const tab = TABS.find(t => t.id === activeTab);
+    const tab = TABS.find((t) => t.id === activeTab);
     if (tab) {
       if (Array.isArray(tab.status)) {
-        list = list.filter(s => tab.status.includes(s.status));
+        list = list.filter((s) => tab.status.includes(s.status));
       } else {
-        list = list.filter(s => s.status === tab.status);
+        list = list.filter((s) => s.status === tab.status);
+      }
+    }
+
+    if (activeTab === "out") {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      if (deliveryFilter === "today") {
+        list = list.filter((s) => {
+          const timeline = Array.isArray(s.timeline) ? s.timeline : [];
+          const outEvent = timeline.find((t) => t.code === "OUT_FOR_DELIVERY");
+          if (!outEvent?.at) return false;
+          const outDate = new Date(outEvent.at);
+          outDate.setHours(0, 0, 0, 0);
+          return outDate.getTime() === today.getTime();
+        });
+      } else if (deliveryFilter === "previous" && previousDate) {
+        const selected = new Date(previousDate);
+        selected.setHours(0, 0, 0, 0);
+        list = list.filter((s) => {
+          const timeline = Array.isArray(s.timeline) ? s.timeline : [];
+          const outEvent = timeline.find((t) => t.code === "OUT_FOR_DELIVERY");
+          if (!outEvent?.at) return false;
+          const outDate = new Date(outEvent.at);
+          outDate.setHours(0, 0, 0, 0);
+          return outDate.getTime() === selected.getTime();
+        });
       }
     }
 
     if (search.trim()) {
       const term = search.toLowerCase();
-      list = list.filter(s =>
-        (s.reference || "").toLowerCase().includes(term) ||
-        (s.pickup?.name || "").toLowerCase().includes(term) ||
-        (s.dropoff?.name || "").toLowerCase().includes(term) ||
-        (s.dropoff?.phone || "").includes(search)
+      list = list.filter(
+        (s) =>
+          (s.reference || "").toLowerCase().includes(term) ||
+          (s.pickup?.name || "").toLowerCase().includes(term) ||
+          (s.dropoff?.name || "").toLowerCase().includes(term) ||
+          (s.dropoff?.phone || "").includes(search)
       );
     }
 
     return list;
-  }, [shipments, activeTab, search]);
+  }, [shipments, activeTab, search, deliveryFilter, previousDate]);
 
-  const toggleAll = () => {
-    setSelected(prev =>
-      prev.size === filtered.length && filtered.length > 0
-        ? new Set()
-        : new Set(filtered.map(s => s.id))
-    );
-  };
-
-  const toggleOne = (id) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const openAssign = () => {
-    if (selected.size === 0) return alert("اختر شحنة واحدة على الأقل");
-    if (!selectedCourier) return alert("اختر المندوب أولًا");
-    setShowModal(true);
-  };
-
-  const executeAssign = async () => {
-    setAssigning(true);
-    let success = 0, failed = 0;
-
+  // إيداع في المخزن
+  const handleDeposit = async () => {
+    setDepositing(true);
+    let success = 0;
     for (const id of selected) {
       try {
         await setStatusWithInventory({
           companyId,
           shipmentId: id,
-          status: "ASSIGNED",
+          status: "AT_HUB",
+          currentUser: user,
+          note: "إيداع في المخزن",
+        });
+        success++;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setDepositing(false);
+    setShowDepositModal(false);
+    setSelected(new Set());
+    alert(`تم إيداع ${success} شحنة بنجاح`);
+  };
+
+  // تعيين مندوب
+  const handleAssign = async () => {
+    setAssigning(true);
+    let success = 0;
+    for (const id of selected) {
+      try {
+        await setStatusWithInventory({
+          companyId,
+          shipmentId: id,
+          status: "OUT_FOR_DELIVERY",
           assignedDriverId: selectedCourier,
           currentUser: user,
         });
         success++;
       } catch (e) {
-        console.error("فشل تعيين شحنة:", id, e);
-        failed++;
+        console.error(e);
       }
     }
-
     setAssigning(false);
-    setShowModal(false);
+    setShowAssignModal(false);
     setSelected(new Set());
     setSelectedCourier("");
+    alert(`تم إرسال ${success} شحنة للتسليم`);
+  };
 
-    alert(
-      success > 0
-        ? `تم تعيين ${success} شحنة بنجاح${failed > 0 ? `، فشل ${failed}` : ""}`
-        : "فشل تعيين كل الشحنات"
+  // إرجاع للمخزن
+  const handleReturn = async () => {
+    if (!returnShipmentId) return;
+    try {
+      await setStatusWithInventory({
+        companyId,
+        shipmentId: returnShipmentId,
+        status: "AT_HUB",
+        currentUser: user,
+        note: "إرجاع من التسليم",
+      });
+      alert("تم إرجاع الشحنة بنجاح");
+    } catch (e) {
+      alert("فشل الإرجاع");
+    }
+    setShowReturnModal(false);
+    setReturnShipmentId(null);
+  };
+
+  const toggleAll = () => {
+    setSelected((prev) =>
+      prev.size === filtered.length && filtered.length > 0
+        ? new Set()
+        : new Set(filtered.map((s) => s.id))
     );
+  };
+
+  const toggleOne = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
 
   return (
@@ -146,8 +198,8 @@ export default function Shipments() {
 
       {/* التبويبات */}
       <div className="tabs">
-        {TABS.map(tab => {
-          const count = shipments.filter(s =>
+        {TABS.map((tab) => {
+          const count = shipments.filter((s) =>
             Array.isArray(tab.status) ? tab.status.includes(s.status) : s.status === tab.status
           ).length;
 
@@ -167,49 +219,77 @@ export default function Shipments() {
         })}
       </div>
 
+      {/* فلتر قيد التسليم */}
+      {activeTab === "out" && (
+        <div className="action-bar mb-6 p-5 bg-gray-900 rounded-2xl">
+          <div className="flex flex-wrap items-center gap-8">
+            <label className="flex items-center gap-3 text-lg cursor-pointer">
+              <input type="radio" name="df" checked={deliveryFilter === "today"} onChange={() => setDeliveryFilter("today")} />
+              اليوم
+            </label>
+            <label className="flex items-center gap-3 text-lg cursor-pointer">
+              <input type="radio" name="df" checked={deliveryFilter === "previous"} onChange={() => setDeliveryFilter("previous")} />
+              تاريخ سابق
+            </label>
+            {deliveryFilter === "previous" && (
+              <input
+                type="date"
+                value={previousDate}
+                onChange={(e) => setPreviousDate(e.target.value)}
+                className="px-6 py-3 rounded-xl bg-gray-800 text-white"
+              />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* شريط الإجراءات */}
-      <div className="action-bar">
+      <div className="action-bar mb-6">
         <div className="flex flex-wrap items-center gap-6">
           <input
+            type="text"
             className="search-input"
-            placeholder="ابحث بالمرجع، العميل، الجوال..."
+            placeholder="ابحث..."
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
           />
 
-          <label className="flex items-center gap-3 text-lg cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selected.size === filtered.length && filtered.length > 0}
-              onChange={toggleAll}
-              className="w-6 h-6 rounded"
-            />
-            تحديد الكل ({selected.size})
-          </label>
-
-          {selected.size > 0 && (
+          {/* شحنات جديدة */}
+          {activeTab === "new" && selected.size > 0 && (
             <>
-              <select
-                className="select-courier"
-                value={selectedCourier}
-                onChange={e => setSelectedCourier(e.target.value)}
+              <span className="text-lg font-bold text-white">محدد: {selected.size}</span>
+              <button
+                onClick={() => setShowDepositModal(true)}
+                disabled={depositing}
+                className="bg-purple-600 hover:bg-purple-700 px-8 py-4 rounded-xl font-bold text-white shadow-lg"
               >
-                <option value="">
-                  {couriers.length === 0 ? "جاري تحميل المندوبين..." : "اختر المندوب"}
-                </option>
-                {couriers.map(c => (
+                {depositing ? "جاري..." : "إيداع في المخزن"}
+              </button>
+            </>
+          )}
+
+          {/* في المخزن */}
+          {activeTab === "hub" && selected.size > 0 && (
+            <>
+              <span className="text-lg font-bold text-white">محدد: {selected.size}</span>
+              <select
+                value={selectedCourier}
+                onChange={(e) => setSelectedCourier(e.target.value)}
+                className="px-6 py-4 rounded-xl bg-gray-800 text-white"
+              >
+                <option value="">اختر المندوب</option>
+                {couriers.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name} {c.vehicle ? `(${c.vehicle})` : ""}
+                    {c.name} {c.vehicle && `(${c.vehicle})`}
                   </option>
                 ))}
               </select>
-
               <button
-                onClick={openAssign}
+                onClick={() => selectedCourier && setShowAssignModal(true)}
                 disabled={!selectedCourier || assigning}
-                className="btn-large btn-success"
+                className="bg-green-600 hover:bg-green-700 px-8 py-4 rounded-xl font-bold text-white shadow-lg"
               >
-                {assigning ? "جاري..." : `تعيين ${selected.size} شحنة`}
+                {assigning ? "جاري..." : "إرسال للتسليم"}
               </button>
             </>
           )}
@@ -221,9 +301,8 @@ export default function Shipments() {
         <table className="table w-full">
           <thead>
             <tr>
-              <th><input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} /></th>
+              {(activeTab === "new" || activeTab === "hub") && <th></th>}
               <th>المرجع</th>
-              <th>المرسل</th>
               <th>المستلم</th>
               <th>الجوال</th>
               <th>العنوان</th>
@@ -234,64 +313,97 @@ export default function Shipments() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map(s => (
+            {filtered.map((s) => (
               <tr key={s.id} className={selected.has(s.id) ? "selected" : ""}>
-                <td className="text-center">
-                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleOne(s.id)} />
-                </td>
-                <td className="font-bold text-blue-400">
-                  {s.reference || s.id.slice(-8)}
-                </td>
-                <td>{s.pickup?.name || "-"}</td>
+                {(activeTab === "new" || activeTab === "hub") && (
+                  <td className="text-center">
+                    <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleOne(s.id)} />
+                  </td>
+                )}
+                <td className="font-bold text-blue-400">{s.reference || s.id.slice(-8)}</td>
                 <td>{s.dropoff?.name || "-"}</td>
                 <td>{s.dropoff?.phone || "-"}</td>
                 <td className="truncate max-w-xs">{s.dropoff?.address || "-"}</td>
-                <td className="font-bold">
-                  {s.charges?.total || "-"} {s.charges?.currency || "ج.م"}
-                </td>
+                <td className="font-bold">{s.charges?.total || "-"} ج.م</td>
                 <td><StatusBadge status={s.status} /></td>
                 <td>{s.assignedDriverName || "-"}</td>
-                <td>
-                  <Link
-                    to={`/awb/${s.id}`}
-                    className="bg-gray-800 hover:bg-gray-700 px-5 py-2 rounded-lg text-sm font-bold"
-                  >
+                <td className="space-x-2">
+                  <Link to={`/awb/${s.id}`} className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg text-sm font-bold">
                     بوليصة
                   </Link>
+
+                  {activeTab === "new" && (
+                    <button
+                      onClick={() => {
+                        setSelected(new Set([s.id]));
+                        setShowDepositModal(true);
+                      }}
+                      className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-bold"
+                    >
+                      إيداع
+                    </button>
+                  )}
+
+                  {["out", "done"].includes(activeTab) && (
+                    <button
+                      onClick={() => {
+                        setReturnShipmentId(s.id);
+                        setShowReturnModal(true);
+                      }}
+                      className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg text-sm font-bold"
+                    >
+                      إرجاع للمخزن
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-
-        {filtered.length === 0 && (
-          <div className="text-center py-20 text-2xl text-gray-500">
-            لا توجد شحنات في هذا القسم
-          </div>
-        )}
       </div>
 
-      {/* مودال التأكيد */}
-      {showModal && (
-        <div className="modal-backdrop" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h3 className="text-3xl font-bold mb-6">تأكيد تعيين المندوب</h3>
-            <p className="text-xl mb-8">
-              تعيين <span className="text-green-400 text-5xl font-bold">{selected.size}</span> شحنة؟
-            </p>
-            <div className="flex justify-center gap-8">
-              <button
-                onClick={() => setShowModal(false)}
-                className="px-10 py-4 bg-gray-700 hover:bg-gray-600 rounded-xl text-xl font-bold"
-              >
-                إلغاء
+      {/* مودال إيداع في المخزن */}
+      {showDepositModal && (
+        <div className="modal-backdrop" onClick={() => setShowDepositModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-3xl font-bold mb-6 text-purple-400">إيداع في المخزن</h3>
+            <p className="text-xl mb-8">هل تريد إيداع <strong>{selected.size}</strong> شحنة في المخزن؟</p>
+            <div className="flex justify-center gap-6">
+              <button onClick={() => setShowDepositModal(false)} className="px-10 py-4 bg-gray-700 rounded-xl text-xl">إلغاء</button>
+              <button onClick={handleDeposit} disabled={depositing} className="px-10 py-4 bg-purple-600 hover:bg-purple-700 rounded-xl text-xl font-bold">
+                {depositing ? "جاري..." : "نعم، إيداع"}
               </button>
-              <button
-                onClick={executeAssign}
-                disabled={assigning}
-                className="btn-large btn-success"
-              >
-                {assigning ? "جاري..." : "نعم، عيّن"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* مودال تعيين مندوب */}
+      {showAssignModal && (
+        <div className="modal-backdrop" onClick={() => setShowAssignModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-3xl font-bold mb-6 text-green-400">إرسال للتسليم</h3>
+            <p className="text-xl mb-8">إرسال <strong>{selected.size}</strong> شحنة للمندوب اليوم؟</p>
+            <div className="flex justify-center gap-6">
+              <button onClick={() => setShowAssignModal(false)} className="px-10 py-4 bg-gray-700 rounded-xl text-xl">إلغاء</button>
+              <button onClick={handleAssign} disabled={assigning} className="px-10 py-4 bg-green-600 hover:bg-green-700 rounded-xl text-xl font-bold">
+                {assigning ? "جاري..." : "نعم، أرسل"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* مودال إرجاع شحنة */}
+      {showReturnModal && (
+        <div className="modal-backdrop" onClick={() => setShowReturnModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-3xl font-bold mb-6 text-orange-400">إرجاع للمخزن</h3>
+            <p className="text-xl mb-8">هل تريد إرجاع هذه الشحنة إلى المخزن؟</p>
+            <div className="flex justify-center gap-6">
+              <button onClick={() => setShowReturnModal(false)} className="px-10 py-4 bg-gray-700 rounded-xl text-xl">إلغاء</button>
+              <button onClick={handleReturn} className="px-10 py-4 bg-orange-600 hover:bg-orange-700 rounded-xl text-xl font-bold">
+                نعم، إرجاع
               </button>
             </div>
           </div>
@@ -301,33 +413,14 @@ export default function Shipments() {
   );
 }
 
-// حالة الشحنة - الـ badge صغير وجميل
 function StatusBadge({ status }) {
-  const map = {
-    CREATED: "badge-new",
-    AT_HUB: "badge-hub",
-    ASSIGNED: "badge-ready",
-    OUT_FOR_DELIVERY: "badge-out",
-    DELIVERED: "badge-done",
-    RETURNED_TO_HUB: "badge-returned",
-    RETURNED: "badge-returned",
-    POSTPONED: "badge-postponed",
-  };
-
   const labels = {
-    CREATED: "جديدة",
-    AT_HUB: "في المخزن",
-    ASSIGNED: "جاهزة",
-    OUT_FOR_DELIVERY: "قيد التسليم",
-    DELIVERED: "تم التسليم",
-    RETURNED_TO_HUB: "مرتجع",
-    RETURNED: "مرتجع",
-    POSTPONED: "مؤجل",
+    CREATED: "جديدة", AT_HUB: "في المخزن", OUT_FOR_DELIVERY: "قيد التسليم",
+    DELIVERED: "تم التسليم", RETURNED_TO_HUB: "مرتجع", RETURNED: "مرتجع", POSTPONED: "مؤجل"
   };
-
-  return (
-    <span className={`badge ${map[status] || "bg-gray-700"}`}>
-      {labels[status] || status}
-    </span>
-  );
-} }
+  const colors = {
+    CREATED: "bg-blue-600", AT_HUB: "bg-purple-600", OUT_FOR_DELIVERY: "bg-orange-600",
+    DELIVERED: "bg-green-600", RETURNED_TO_HUB: "bg-red-600", RETURNED: "bg-red-600", POSTPONED: "bg-gray-600"
+  };
+  return <span className={`badge ${colors[status] || "bg-gray-700"}`}>{labels[status] || status}</span>;
+}
